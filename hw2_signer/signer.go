@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -17,14 +19,16 @@ type MultiHashIndexedResult struct {
 	result string
 }
 
-var inputDataCount = 0
-var combineResultsCount = 0
+var inputDataCount uint32 = 0
+var combineResultsCount uint32 = 0
 var combineResultsSlice []string
+var mutex = &sync.Mutex{}
 
 func SingleHash(in, out chan interface{}) {
 	for currVal := range in {
 		data := fmt.Sprintf("%v", currVal)
-		inputDataCount++
+		//atomic.AddUint32(&inputDataCount, 1)
+		//inputDataCount++
 
 		//crcChan := make(chan string)
 		//crcMd5Chan := make(chan string)
@@ -44,6 +48,7 @@ func SingleHash(in, out chan interface{}) {
 		// return
 		result := crc + "~" + crcMd5
 		out <- result
+		runtime.Gosched()
 	}
 }
 
@@ -78,27 +83,37 @@ func MultiHash(in, out chan interface{}) {
 		//}
 
 		out <- result
+		runtime.Gosched()
 	}
 }
 
 func CombineResults(in, out chan interface{}) {
 	for currVal := range in {
-		dataIn := fmt.Sprintf("%v", currVal)
+		data, ok := currVal.(string)
+		if !ok {
+			panic("cant convert result data to string")
+		}
 
-		combineResultsSlice = append(combineResultsSlice, dataIn)
-		//if len(combineResultsSlice) < inputDataCount {
+		mutex.Lock()
+		combineResultsSlice = append(combineResultsSlice, data)
+		mutex.Unlock()
+		atomic.AddUint32(&combineResultsCount, 1)
+		//loadedInputDataCount := atomic.LoadUint32(&inputDataCount)
+		//if uint32(len(combineResultsSlice)) < loadedInputDataCount {
 		//	continue
 		//}
+		if combineResultsCount == 3 {
+			sort.Strings(combineResultsSlice)
 
-		sort.Strings(combineResultsSlice)
-		resutl := strings.Join(combineResultsSlice, "_")
-		out <- resutl
+			var result interface{} = strings.Join(combineResultsSlice, "_")
+			fmt.Printf("combine result: %s\n", strings.Join(combineResultsSlice, "_"))
+			out <- result
+		}
+		runtime.Gosched()
 	}
 }
 
 func ExecutePipeline(jobs ...job) {
-	runtime.GOMAXPROCS(0)
-
 	jobsLength := len(jobs)
 	channelsLength := jobsLength + 1
 
@@ -106,29 +121,67 @@ func ExecutePipeline(jobs ...job) {
 	for i := 0; i < channelsLength; i++ {
 		channels = append(channels, make(chan interface{}))
 	}
+	//fmt.Println(len(channels))
 
 	for i := 0; i < jobsLength; i++ {
+		//fmt.Printf("job[%d] in(i): %d\tout(i+1): %d\n", i, i, i+1)
 		go jobs[i](channels[i], channels[i+1])
+		runtime.Gosched()
 	}
 }
 
 //func main() {
-//	jab := []job{
+//	//jab := []job{
+//	//	job(func(in, out chan interface{}) {
+//	//		fmt.Println("first")
+//	//		inputData := []int{0, 1, 1, 2, 3, 5, 8}
+//	//		for _, v := range inputData {
+//	//			out <- v
+//	//		}
+//	//	}),
+//	//	job(SingleHash),
+//	//	job(MultiHash),
+//	//	job(CombineResults),
+//	//	job(func(in, out chan interface{}) {
+//	//		dataRaw := <-in
+//	//		fmt.Printf("data returned %v: ", dataRaw)
+//	//	}),
+//	//}
+//	//ExecutePipeline(jab...)
+//
+//	var ok = true
+//	var recieved uint32
+//	freeFlowJobs := []job{
 //		job(func(in, out chan interface{}) {
+//
 //			fmt.Println("first")
-//			inputData := []int{0, 1}
-//			for _, v := range inputData {
-//				out <- v
+//			fmt.Println("first")
+//			out <- 1
+//			fmt.Println("first data send")
+//			time.Sleep(10 * time.Millisecond)
+//			fmt.Println("first after timeout")
+//			currRecieved := atomic.LoadUint32(&recieved)
+//			fmt.Printf("value")
+//			// в чем тут суть
+//			// если вы накапливаете значения, то пока вся функция не отрабоатет - дальше они не пойдут
+//			// тут я проверяю, что счетчик увеличился в следующей функции
+//			// это значит что туда дошло значение прежде чем текущая функция отработала
+//			if currRecieved == 0 {
+//				ok = false
 //			}
 //		}),
-//		job(SingleHash),
-//		job(MultiHash),
-//		job(CombineResults),
 //		job(func(in, out chan interface{}) {
-//			dataRaw := <-in
-//			fmt.Printf("data returned %v: ", dataRaw)
+//			fmt.Println("second")
+//			for _ = range in {
+//				fmt.Println("second data recieved")
+//				atomic.AddUint32(&recieved, 1)
+//			}
 //		}),
 //	}
-//	ExecutePipeline(jab...)
+//
+//	ExecutePipeline(freeFlowJobs...)
+//	if !ok || recieved == 0 {
+//		fmt.Printf("no value free flow - dont collect them")
+//	}
 //	fmt.Scanln()
 //}

@@ -25,6 +25,7 @@ var outputDataCount uint32 = 0
 var combineResultsSlice []string
 var controlChannel = make(chan interface{})
 var mu = &sync.Mutex{}
+var jobsCount int
 
 var secondControlJob = func(in, out chan interface{}) {
 	for input := range in {
@@ -179,31 +180,58 @@ func resetCounters() {
 	mu.Unlock()
 }
 
+func launchJob(prevChan chan interface{}, jobs []job, launchCounter int) {
+	if launchCounter == len(jobs) {
+		return
+	}
+	nextChan := make(chan interface{})
+	go jobs[launchCounter](prevChan, nextChan)
+	launchCounter++
+	launchJob(nextChan, jobs, launchCounter)
+}
+
+func pathThrough(in chan interface{}, out chan interface{}) (chan interface{}, chan interface{}) {
+	nextOut := make(chan interface{})
+	go func() {
+		for data := range in {
+			out <- data
+		}
+		close(out)
+	}()
+	return out, nextOut
+}
+
 func ExecutePipeline(jobs ...job) {
-	jobs = injectControlJobs(jobs)
-	jobsCount := len(jobs)
+	//jobs = injectControlJobs(jobs)
+	jobsCount = len(jobs)
 	channelsCount := jobsCount + channelOverHeadCount
 
 	var channels []chan interface{}
 	for i := 0; i < channelsCount; i++ {
-		channels = append(channels, make(chan interface{}))
+		channels = append(channels, make(chan interface{}, MaxInputDataLen))
 	}
-
+	//in := make(chan interface{})
+	//launchCounter := 0
+	//launchJob(in, jobs, launchCounter)
+	in := make(chan interface{})
 	for i := 0; i < jobsCount; i++ {
-		go jobs[i](channels[i], channels[i+1])
-		runtime.Gosched()
+		fmt.Println("i: ", i)
+		go jobs[i](pathThrough(in), )
+		fmt.Println("index after: ", i)
+		//close(channels[i])
+		//runtime.Gosched()
 	}
 
-	LOOP:
-		for {
-			select {
-			case <-controlChannel:
-				resetCounters()
-				closeChannels(channels)
-				break LOOP
-			default:
-				runtime.Gosched()
-				continue
-			}
-		}
+	//LOOP:
+	//	for {
+	//		select {
+	//		case <-controlChannel:
+	//			resetCounters()
+	//			closeChannels(channels)
+	//			break LOOP
+	//		default:
+	//			runtime.Gosched()
+	//			continue
+	//		}
+	//	}
 }
